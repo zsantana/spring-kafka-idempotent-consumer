@@ -1,0 +1,125 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-consumer-demo
+  labels:
+    app: kafka-consumer-demo
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0  # Zero downtime
+  selector:
+    matchLabels:
+      app: kafka-consumer-demo
+  template:
+    metadata:
+      labels:
+        app: kafka-consumer-demo
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      terminationGracePeriodSeconds: 60
+      
+      containers:
+        - name: kafka-consumer-demo
+          image: kafka-consumer-demo:latest
+          
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+          
+          env:
+            # JVM otimizada para container + Java 21
+            - name: JAVA_OPTS
+              value: >-
+                -XX:+UseContainerSupport
+                -XX:MaxRAMPercentage=75.0
+                -XX:InitialRAMPercentage=50.0
+                -XX:+UseZGC
+                -XX:+ZGenerational
+                -XX:+UseStringDeduplication
+                -Djava.security.egd=file:/dev/./urandom
+            
+            # Configurações ajustadas para 2 CPUs
+            - name: KAFKA_CONCURRENCY
+              value: "4"
+            - name: KAFKA_MAX_POLL_RECORDS
+              value: "100"
+            - name: REDISSON_THREADS
+              value: "4"
+            - name: REDISSON_NETTY_THREADS
+              value: "4"
+            - name: REDIS_POOL_SIZE
+              value: "20"
+            - name: REDIS_MIN_IDLE
+              value: "5"
+            - name: HIKARI_MAX_POOL
+              value: "10"
+            - name: HIKARI_MIN_IDLE
+              value: "5"
+            - name: BATCH_SIZE
+              value: "50"
+            
+            # Conexões externas
+            - name: KAFKA_BROKERS
+              valueFrom:
+                configMapKeyRef:
+                  name: kafka-config
+                  key: bootstrap-servers
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: redis-config
+                  key: host
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: db-config
+                  key: host
+          
+          ports:
+            - containerPort: 8081
+              name: http
+          
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8081
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 15"]
+      
+      # Anti-affinity para distribuir pods
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: kafka-consumer-demo
+                topologyKey: kubernetes.io/hostname

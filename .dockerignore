@@ -1,0 +1,47 @@
+# Arquivos de build
+target/
+!target/*.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# Git
+.git/
+.gitignore
+
+# Maven
+.mvn/repository/
+
+# Logs
+*.log
+logs/
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Documentação
+*.md
+docs/
+
+# Monitoramento (não necessário na imagem)
+monitoring/
+
+# Scripts
+scripts/
+*.sh
+
+# Kubernetes configs
+kubernetes*.yml
+docker-hpa*.yml
+
+# Environment files
+.env
+.env.*
+
+# Testes
+src/test/

@@ -1,0 +1,133 @@
+spring:
+  application:
+    name: kafka-consumer-demo
+  
+  # Thread executor para Virtual Threads (Java 21)
+  threads:
+    virtual:
+      enabled: true
+  
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:5432/kafka_consumer_db
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+    hikari:
+      # Fórmula: connections = (CPUs × 2) + spindle_count
+      # Para 2 CPUs: (2 × 2) + 1 = 5 (mínimo), usamos 10 para margem
+      maximum-pool-size: ${HIKARI_MAX_POOL:10}
+      minimum-idle: ${HIKARI_MIN_IDLE:5}
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+  
+  jpa:
+    hibernate:
+      ddl-auto: none  # NUNCA auto em produção
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 50
+        order_inserts: true
+        order_updates: true
+    open-in-view: false  # Performance
+  
+  kafka:
+    bootstrap-servers: ${KAFKA_BROKERS:localhost:9092}
+    consumer:
+      group-id: ${KAFKA_GROUP_ID:high-volume-consumer-group}
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "com.example"  # Específico, não "*"
+        max.poll.records: ${KAFKA_MAX_POLL_RECORDS:100}
+        max.poll.interval.ms: 300000
+        session.timeout.ms: 45000
+        fetch.min.bytes: 1024
+        fetch.max.wait.ms: 500
+        # Cooperative rebalancing - evita stop-the-world
+        partition.assignment.strategy: org.apache.kafka.clients.consumer.CooperativeStickyAssignor
+    listener:
+      ack-mode: manual
+      # Fórmula: min(partições/replicas_esperadas, CPUs × 2)
+      concurrency: ${KAFKA_CONCURRENCY:4}
+      poll-timeout: 3000
+      type: batch
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      redisson:
+        connection-pool-size: ${REDIS_POOL_SIZE:100}
+        connection-minimum-idle-size: ${REDIS_MIN_IDLE:24}
+        idle-connection-timeout: ${REDIS_IDLE_TIMEOUT:10000}
+        timeout: ${REDIS_TIMEOUT:3000}
+        retry-attempts: ${REDIS_RETRY_ATTEMPTS:3}
+        retry-interval: ${REDIS_RETRY_INTERVAL:1500}
+        threads: ${REDISSON_THREADS:16}
+        netty-threads: ${REDISSON_NETTY_THREADS:32}
+
+redisson:
+  codec: org.redisson.codec.JsonJacksonCodec
+  # Threads = CPUs × 2
+  threads: ${REDISSON_THREADS:4}
+  # Netty threads = CPUs × 2
+  netty-threads: ${REDISSON_NETTY_THREADS:4}
+  single-server-config:
+    address: "redis://${REDIS_HOST:localhost}:${REDIS_PORT:6379}"
+    # Pool = (Kafka concurrency × 2) + margem
+    connection-pool-size: ${REDIS_POOL_SIZE:20}
+    connection-minimum-idle-size: ${REDIS_MIN_IDLE:5}
+    idle-connection-timeout: 30000
+    timeout: 3000
+    retry-attempts: 3
+    retry-interval: 1500
+
+app:
+  kafka:
+    topic: ${KAFKA_TOPIC:high-volume-topic}
+    dlq-topic: ${KAFKA_DLQ_TOPIC:high-volume-topic-dlq}
+  idempotency:
+    redis-ttl-seconds: 86400
+    redis-ttl-jitter-seconds: 7200  # Evita TTL cliff
+    postgres-cleanup-days: 7
+  performance:
+    batch-size: ${BATCH_SIZE:50}
+    redis-fallback-enabled: true
+
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,redis,db
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus,info
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+
+server:
+  port: 8081
+  shutdown: graceful
+  
+spring.lifecycle:
+  timeout-per-shutdown-phase: 30s
+
+logging:
+  level:
+    root: WARN
+    com.example: INFO
+    org.springframework.kafka: WARN
