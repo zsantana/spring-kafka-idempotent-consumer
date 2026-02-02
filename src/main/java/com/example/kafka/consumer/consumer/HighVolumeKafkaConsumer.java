@@ -13,10 +13,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.Acknowledgment;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -28,7 +29,8 @@ public class HighVolumeKafkaConsumer {
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ObjectMapper objectMapper;
     private final String dlqTopic;
-    private final ExecutorService executorService;
+    private final ExecutorService workers;
+    private final ConcurrentLinkedQueue<ConsumerRecord<String, String>> buffer;
     
     private final Counter receivedCounter;
     private final Counter processedCounter;
@@ -49,7 +51,11 @@ public class HighVolumeKafkaConsumer {
         this.objectMapper = objectMapper;
         this.dlqTopic = dlqTopic;
         
-        this.executorService = Executors.newVirtualThreadPerTaskExecutor();
+        // ExecutorService com Virtual Threads para processamento assíncrono
+        this.workers = Executors.newVirtualThreadPerTaskExecutor();
+        
+        // Buffer thread-safe para armazenar registros do Kafka
+        this.buffer = new ConcurrentLinkedQueue<>();
         
         this.receivedCounter = meterRegistry.counter("kafka.messages.received");
         this.processedCounter = meterRegistry.counter("kafka.messages.processed");
@@ -57,52 +63,72 @@ public class HighVolumeKafkaConsumer {
         this.dlqCounter = meterRegistry.counter("kafka.messages.dlq");
         this.batchProcessingTimer = meterRegistry.timer("kafka.batch.processing.duration");
         
-        log.info("HighVolumeKafkaConsumer initialized with {} concurrent consumers", concurrency);
+        // Registra gauge para monitorar tamanho do buffer
+        meterRegistry.gauge("kafka.buffer.current.size", buffer, ConcurrentLinkedQueue::size);
+        
+        log.info("HighVolumeKafkaConsumer initialized with {} concurrent consumers and Virtual Thread executor", concurrency);
     }
     
+    /**
+     * Listener do Kafka que adiciona mensagens ao buffer e faz commit imediato.
+     * O processamento real acontece de forma assíncrona no método drain().
+     */
     @KafkaListener(
         topics = "${app.kafka.topic}",
         groupId = "${spring.kafka.consumer.group-id}",
         containerFactory = "kafkaListenerContainerFactory",
         concurrency = "${spring.kafka.listener.concurrency:10}"
     )
-    public void consumeBatch(
+    public void onMessage(
             List<ConsumerRecord<String, String>> records,
             Acknowledgment acknowledgment) {
         
-        batchProcessingTimer.record(() -> {
-            int batchSize = records.size();
-            receivedCounter.increment(batchSize);
+        int batchSize = records.size();
+        receivedCounter.increment(batchSize);
+        
+        log.info("Received batch of {} messages, adding to buffer", batchSize);
+        
+        // Adiciona todos os registros ao buffer - O(1) por operação
+        for (ConsumerRecord<String, String> record : records) {
+            buffer.offer(record);
+        }
+        
+        // Commit imediato - não bloqueia o poll()
+        if (acknowledgment != null) {
+            acknowledgment.acknowledge();
+            log.info("Batch of {} messages acknowledged immediately", batchSize);
+        }
+        
+        log.info("Buffer size after adding batch: {}", buffer.size());
+    }
+    
+    /**
+     * Drena o buffer e submete mensagens para processamento em threads virtuais.
+     * Executa com delay mínimo para processar continuamente.
+     */
+    @Scheduled(fixedDelay = 10)
+    public void drain() {
+        ConsumerRecord<String, String> record;
+        int processed = 0;
+        
+        
+        // Drena o buffer enquanto houver mensagens
+        while ((record = buffer.poll()) != null) {
+            final ConsumerRecord<String, String> currentRecord = record;
             
-            log.info("Received batch of {} messages", batchSize);
-            
-            try {
-                List<CompletableFuture<Void>> futures = records.stream()
-                    .map(record -> CompletableFuture.runAsync(
-                        () -> processRecord(record),
-                        executorService
-                    ))
-                    .toList();
-                
-                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-                
-                if (acknowledgment != null) {
-                    acknowledgment.acknowledge();
-                    log.debug("Batch acknowledged successfully");
-                }
-                
-                log.info("Batch of {} messages processed successfully", batchSize);
-                
-            } catch (Exception e) {
-                log.error("Error processing batch", e);
-                failedCounter.increment(batchSize);
-            }
-        });
+            // Submete para processamento assíncrono em virtual thread
+            workers.submit(() -> processRecord(currentRecord));
+            processed++;
+        }
+        
+        if (processed > 0) {
+            log.info("Submitted {} messages for async processing", processed);
+        }
     }
     
     private void processRecord(ConsumerRecord<String, String> record) {
         try {
-            log.debug("Processing record - Partition: {}, Offset: {}, Key: {}", 
+            log.info("Processing record - Partition: {}, Offset: {}, Key: {}", 
                     record.partition(), record.offset(), record.key());
             
             MessageDto messageDto = deserializeMessage(record.value());

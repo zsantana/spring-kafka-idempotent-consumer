@@ -1,33 +1,9 @@
 # =============================================================================
 # Dockerfile - Kafka Consumer Demo com Zulu OpenJDK 21
-# Multi-stage build para otimização de tamanho
+# Runtime-only: Build deve ser feito externamente
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# Stage 1: Build
-# -----------------------------------------------------------------------------
-FROM azul/zulu-openjdk:21 AS builder
-
-WORKDIR /app
-
-# Copiar Maven wrapper e pom.xml primeiro (cache de dependências)
-COPY mvnw .
-COPY .mvn .mvn
-COPY pom.xml .
-
-# Baixar dependências (camada cacheada)
-RUN chmod +x mvnw && ./mvnw dependency:go-offline -B
-
-# Copiar código fonte
-COPY src src
-
-# Build da aplicação (skip tests para build mais rápido)
-RUN ./mvnw package -DskipTests -B
-
-# -----------------------------------------------------------------------------
-# Stage 2: Runtime
-# -----------------------------------------------------------------------------
-FROM azul/zulu-openjdk-alpine:21-jre AS runtime
+FROM azul/zulu-openjdk-alpine:21-jre
 
 # Metadata
 LABEL maintainer="rsantana"
@@ -39,8 +15,9 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 WORKDIR /app
 
-# Copiar JAR do stage de build
-COPY --from=builder /app/target/*.jar app.jar
+# Copiar JAR pré-compilado da pasta target do host
+# Build deve ser executado antes: ./mvnw clean package -DskipTests
+COPY target/*.jar app.jar
 
 # Alterar ownership para usuário não-root
 RUN chown -R appuser:appgroup /app

@@ -44,8 +44,9 @@ spring:
         max.poll.records: ${KAFKA_MAX_POLL_RECORDS:100}
         max.poll.interval.ms: 300000
         session.timeout.ms: 45000
-        fetch.min.bytes: 1024
-        fetch.max.wait.ms: 500
+        heartbeat.interval.ms: 5000
+        fetch.min.bytes: 1
+        fetch.max.wait.ms: 200
         # Cooperative rebalancing - evita stop-the-world
         partition.assignment.strategy: org.apache.kafka.clients.consumer.CooperativeStickyAssignor
     listener:
