@@ -1,0 +1,26 @@
+
+flowchart LR
+ subgraph subGraph0["OpenShift ARO"]
+        API["API Orchestrator"]
+        WORKER["LLM Worker Service<br>Java 21 + Virtual Threads"]
+        WS["WebSocket / SSE Gateway"]
+  end
+ subgraph Autoscaling["Autoscaling"]
+        HPA["HPA<br>Based on Kafka Lag<br>+ In-flight Requests"]
+  end
+    FE["Frontend Web / App"] -- Submit Prompt --> API
+    WS -- Notify Progress / Result --> FE
+    API -- Validate / Enrich --> DB[("Metadata DB")]
+    API -- Publish Prompt --> KAFKA[("Kafka - prompt-topic")]
+    KAFKA -- Consume --> WORKER
+    WORKER -- HTTP Streaming / Async --> LLM["External LLM Provider<br>(Azure Foundry / OpenAI / Anthropic)"]
+    LLM -- Token Stream / Response --> WORKER
+    WORKER -- Persist Output --> STORE[("Blob Storage / File System")]
+    WORKER -- Update Status --> DB
+    WORKER -- Completion Event --> EVT[("Kafka - completion-topic")]
+    EVT -- Notify --> WS
+    WORKER -- Retry / Timeout / Policy Error --> DLQ[("Kafka - DLQ")]
+    DLQ -- Manual / Automated Reprocess --> WORKER
+    WORKER --> METRICS["Metrics / Tracing<br>(Prometheus / OTEL)"]
+    API --> METRICS
+    HPA --> WORKER
